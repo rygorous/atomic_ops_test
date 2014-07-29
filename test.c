@@ -5,6 +5,7 @@
 // The list of tests.
 #define TESTS \
     T(add) \
+    T(dependent_adds) \
     T(add_mfence) \
     T(lockadd) \
     T(xadd) \

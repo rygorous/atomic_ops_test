@@ -55,6 +55,16 @@
 
         perf_end
 
+        ; test_dependent_adds
+        perf_start test_dependent_adds
+
+        add rax, [r9]
+        add rax, [r9+8]
+        add rax, [r9+16]
+        add rax, [r9+24]
+
+        perf_end
+
         ; test_add_mfence
         perf_start test_add_mfence
 

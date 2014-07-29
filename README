@@ -1,0 +1,6 @@
+This is a quick test to measure the throughput of different types of (atomic)
+memory operations on x86-64 running Windows. To compile, you'll need the Visual
+C++ compiler and YASM (see b.bat).
+
+Or just run the binary if you're into running random EXEs you got from the internet.
+

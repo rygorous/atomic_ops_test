@@ -2,13 +2,6 @@
 #include <stdint.h>
 #include <windows.h>
 
-// Scratch area. This is where our memory updates go to.
-// Cache-line aligned (on x86-64).
-static __declspec(align(64)) uint64_t scratch[16];
-
-// We use this event to signal to the interference thread that it's time to exit.
-static HANDLE running_event, exit_event;
-
 // The list of tests.
 #define TESTS \
     T(add) \
@@ -26,7 +19,9 @@ static HANDLE running_event, exit_event;
     T(hyperthread_read_line) \
     T(hyperthread_write_line) \
     T(other_core_read_line) \
-    T(other_core_write_line)
+    T(other_core_write_line) \
+    T(three_cores_read_line) \
+    T(three_cores_write_line)
 
 // Declare the tests
 #define T(id) extern int64_t test_##id(uint64_t *mem);
@@ -61,46 +56,73 @@ static void lock_to_logical_core(uint32_t which)
 }
 
 // Interference thread
+enum { NUM_INTERFERENCE_THREADS = 7 };
+
+typedef struct {
+    int core_id;
+    int interference_mode;
+} thread_args;
+
+// Scratch area. This is where our memory updates go to.
+// Cache-line aligned (on x86-64).
+static __declspec(align(64)) uint64_t scratch[16];
+
+// We use this event to signal to the interference thread that it's time to exit.
+static HANDLE exit_event;
+
+// Number of threads that have started running the interference main loop.
+static volatile LONG num_running;
 
 static unsigned int __stdcall interference_thread(void *argp)
 {
+    const thread_args *args = (const thread_args *)argp;
     uint64_t private_mem[8] = { 0 };
-    uint64_t *interfere_ptr = 0;
+    uint64_t *interfere_ptr = private_mem;
     int do_writes = 0;
     int just_started = 1;
 
-    int arg = *(int *)argp;
-    switch (arg) {
-    case IM_none:
-        interfere_ptr = private_mem;
-        lock_to_logical_core(2);
-        break;
+    lock_to_logical_core(args->core_id);
 
+    switch (args->interference_mode) {
     case IM_hyperthread_running:
-        interfere_ptr = private_mem;
-        lock_to_logical_core(1);
+        if (args->core_id == 1)
+            interfere_ptr = private_mem;
         break;
 
     case IM_hyperthread_read_line:
-        interfere_ptr = scratch;
-        lock_to_logical_core(1);
+        if (args->core_id == 1)
+            interfere_ptr = scratch;
         break;
 
     case IM_hyperthread_write_line:
-        interfere_ptr = scratch;
-        do_writes = 1;
-        lock_to_logical_core(1);
+        if (args->core_id == 1) {
+            interfere_ptr = scratch;
+            do_writes = 1;
+        }
         break;
 
     case IM_other_core_read_line:
-        interfere_ptr = scratch;
-        lock_to_logical_core(2);
+        if (args->core_id == 2)
+            interfere_ptr = scratch;
         break;
 
     case IM_other_core_write_line:
-        interfere_ptr = scratch;
-        do_writes = 1;
-        lock_to_logical_core(2);
+        if (args->core_id == 2) {
+            interfere_ptr = scratch;
+            do_writes = 1;
+        }
+        break;
+
+    case IM_three_cores_read_line:
+        if (args->core_id == 2 || args->core_id == 4 || args->core_id == 6)
+            interfere_ptr = scratch;
+        break;
+
+    case IM_three_cores_write_line:
+        if (args->core_id == 2 || args->core_id == 4 || args->core_id == 6) {
+            interfere_ptr = scratch;
+            do_writes = 1;
+        }
         break;
     }
 
@@ -112,10 +134,10 @@ static unsigned int __stdcall interference_thread(void *argp)
             interference_write(interfere_ptr);
 
         // after first loop through (so everything is warmed up),
-        // set "running_event" if we're freshly started.
+        // this thread counts as "running".
         if (just_started) {
-            SetEvent(running_event);
             just_started = 0;
+            InterlockedIncrement(&num_running);
         }
     }
 
@@ -150,31 +172,41 @@ int main()
 {
     int interference_mode;
 
-    running_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    exit_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    exit_event = CreateEvent(NULL, TRUE, FALSE, NULL);
     lock_to_logical_core(0);
 
     for (interference_mode = 0; interference_mode < IM_count; interference_mode++) {
-        HANDLE thread;
+        thread_args args[NUM_INTERFERENCE_THREADS];
+        HANDLE threads[NUM_INTERFERENCE_THREADS];
+        int i;
 
         printf("interference type: %s\n", interference_name(interference_mode));
-        thread = (HANDLE) _beginthreadex(NULL, 0, interference_thread, &interference_mode, 0, NULL);
-        
-        // wait for thread to start running
-        WaitForSingleObject(running_event, INFINITE);
 
+        // start the interference threads
+        num_running = 0;
+        for (i = 0; i < NUM_INTERFERENCE_THREADS; i++) {
+            args[i].core_id = i + 1;
+            args[i].interference_mode = interference_mode;
+            threads[i] = (HANDLE) _beginthreadex(NULL, 0, interference_thread, &args[i], 0, NULL);
+        }
+
+        // wait until they're all running (yeah, evil spin loop)
+        while (num_running < NUM_INTERFERENCE_THREADS)
+            Sleep(0);
+        
         // run our tests
-        #define T(id) printf("%16s: %7.2f cycles/op\n", #id, (double) run_test(test_##id) / 40000.0);
+        #define T(id) printf("%16s: %8.2f cycles/op\n", #id, (double) run_test(test_##id) / 40000.0);
         TESTS
         #undef T
 
         // wait for thread to shut down
         SetEvent(exit_event);
-        WaitForSingleObject(thread, INFINITE);
-        CloseHandle(thread);
+        WaitForMultipleObjects(NUM_INTERFERENCE_THREADS, threads, TRUE, INFINITE);
+        ResetEvent(exit_event);
+        for (i = 0; i < NUM_INTERFERENCE_THREADS; i++)
+            CloseHandle(threads[i]);
     }
 
-    CloseHandle(running_event);
     CloseHandle(exit_event);
 
     return 0;

@@ -15,7 +15,6 @@
 // The list of interference modes
 #define INTERFERENCE_MODES \
     T(none) \
-    T(hyperthread_running) \
     T(hyperthread_read_line) \
     T(hyperthread_write_line) \
     T(other_core_read_line) \
@@ -84,11 +83,6 @@ static unsigned int __stdcall interference_thread(void *argp)
     lock_to_logical_core(args->core_id);
 
     switch (args->interference_mode) {
-    case IM_hyperthread_running:
-        if (args->core_id == 1)
-            interfere_ptr = private_mem;
-        break;
-
     case IM_hyperthread_read_line:
         if (args->core_id == 1)
             interfere_ptr = scratch;

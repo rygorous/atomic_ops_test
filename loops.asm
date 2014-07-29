@@ -9,7 +9,7 @@
 %macro perf_start 1
         public_fn %1
         mov r9, rcx ; save first arg into r9
-        rdtscp
+        rdtsc
         shl rdx, 32
         or rdx, rax
         mov r8, rdx
@@ -22,7 +22,7 @@
         dec ecx
         jnz .lp
 
-        rdtscp
+        rdtsc
         shl rdx, 32
         or rax, rdx
         sub rax, r8
